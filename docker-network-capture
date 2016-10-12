@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+
+from subprocess import PIPE, Popen, TimeoutExpired
+from os import pipe, dup, close, read
+from string import printable
+from docker import Client
+from argparse import ArgumentParser
+
+class CaptureFlags(object):
+    (Invalid, Ingress, Egress, Both) = (0, 1, 2, 3)
+
+# this should be set to the maximum size of ethernet frame
+MAX_PACKET_SIZE = 2048
+
+def skip_tcpdump_header(contents):
+    if len(contents) < 6:
+        return False
+    return contents[:4] == b'\xd4\xc3\xb2\xa1'
+
+def inspect_packet(packet):
+    pass
+
+def has_flag(val, flag):
+    return val & flag == flag
+
+def init_tcpdump(interface, address, flags=CaptureFlags.Ingress):
+    direction = []
+    if has_flag(flags, CaptureFlags.Ingress):
+        direction += ["dst"]
+    if has_flag(flags, CaptureFlags.Both):
+        direction += ["or"]
+    if has_flag(flags, CaptureFlags.Egress):
+        direction += ["src"]
+    args = ["tcpdump", "-i", interface, "-w-", "-U", "ether"] + direction + [address]
+    read, write = pipe()
+    write2 = dup(write)
+    close(write)
+    proc = Popen(args, stdin=PIPE, stdout=write2, stderr=PIPE)
+    close(write2)
+    return read, proc
+
+def _extend_buf(buf, size=16):
+    num = size - len(buf)
+    return buf + [" "] * num
+
+def format_buffer(buf):
+    output = "  00 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15"
+    output += "\n+-------------------------------------------------+----------------+\n| "
+    cnt = 0
+    line_buffer = []
+    for c in buf:
+        if chr(c) in printable and c >= 32:
+            line_buffer.append(chr(c))
+        else:
+            line_buffer.append('.')
+        output += hex(c)[2:].zfill(2).upper() + ' '
+        cnt += 1
+        if cnt == 16:
+            cnt = 0
+            output += "|{}|".format("".join(line_buffer))
+            output += '\n| '
+            line_buffer = []
+    if line_buffer:
+        last = output.rfind('\n')
+        pad = 51 - (len(output) - last)
+        output += (" " * pad) + "|{}|".format("".join(_extend_buf(line_buffer)))
+        output += '\n'
+    output += "+-------------------------------------------------+----------------+"
+    return output
+
+def capture_container_traffic(container, bridge="docker0", verbose=False, capture=CaptureFlags.Egress, docker=''):
+    cli = Client(base_url=docker)
+    cont = cli.inspect_container(container)
+    ns = cont.get("NetworkSettings", None)
+    if not ns:
+        raise ValueError("Container has no associated network settings")
+    mac = ns.get("MacAddress", None)
+    if not mac:
+        raise ValueError("Container has no MAC Address")
+
+    r, p = init_tcpdump(bridge, mac, capture)
+    packets = 1
+    try:
+        while True:
+            try:
+                code = p.wait(0)
+                if code == 1:
+                    import sys
+                    print('[!] Tcpdump execution **failed**, are you a superuser?', file=sys.stderr)
+                return
+            except TimeoutExpired:
+                pass
+
+            data = read(r, MAX_PACKET_SIZE)
+            if not data:
+                continue
+
+            if skip_tcpdump_header(data):
+                continue
+
+            if verbose:
+                print("Packet: {}".format(packets))
+                print(format_buffer(data))
+
+            inspect_packet(data)
+
+            packets += 1
+    except KeyboardInterrupt:
+        if verbose:
+            print("\b\bExiting")
+
+
+arguments = ArgumentParser()
+arguments.add_argument('--verbose', default=False, action='store_true')
+arguments.add_argument('-b', '--bridge', default='docker0', help='Docker bridge to use')
+arguments.add_argument('-c', '--capture', default='egress', help='Direction of traffic to capture [egress,ingress]')
+arguments.add_argument('-d', '--docker', default='unix://var/run/docker.sock', help='')
+arguments.add_argument('container')
+
+args = arguments.parse_args()
+capture_args = args.capture.lower()
+capture = CaptureFlags.Invalid
+if 'ingress' in capture_args:
+    capture |= CaptureFlags.Ingress
+if 'egress' in capture_args:
+    capture |= CaptureFlags.Egress
+
+if args.verbose:
+    print('[+] Initializing packet capture on: "{bridge}" for container: "{container}"'.format(bridge=args.bridge,
+       container=args.container))
+
+capture_container_traffic(args.container, bridge=args.bridge, docker=args.docker,
+                          verbose=args.verbose, capture=capture)
