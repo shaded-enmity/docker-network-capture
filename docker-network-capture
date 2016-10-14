@@ -1,186 +1,44 @@
 #!/usr/bin/env python3
-
-from subprocess import PIPE, Popen, TimeoutExpired
-from os import pipe, dup, close, read, open, O_RDONLY
-from string import printable
 from docker import Client
 from argparse import ArgumentParser
-from ctypes import CDLL
-from threading import Thread
-from queue import Queue, Empty
+
+from dnc.pipeline import Pipeline, LoopbackProducer, InterfaceProducer
+from dnc import CaptureFlags, ContainerError
 
 
-class Pipeline(object):
-    def __init__(self, queue):
-        self.producers = []
-        self.queue = queue
-        self.consumers = []
-        self.running = False
+def _main(container, bridge="docker0", capture=CaptureFlags.Egress, docker='', **kwargs):
+    """ Initialize and start packet capture for `container` on specific `bridge`
 
-    def add_producer(self, target):
-        if not self.running:
-            self.producers.append(target)
-        else:
-            raise Exception("Pipeline already running")
-
-    def add_consumer(self, target):
-        self.consumers.append(target)
-
-    def run(self):
-        self.running = True
-
-        threads = []
-        for p in self.producers:
-            threads.append(Thread(target=p))
-            threads[-1].start()
-
-        while any(t.is_alive() for t in threads):
-            try:
-                data = self.queue.get()
-                for c in self.consumers:
-                    c(data)
-                self.queue.task_done()
-            except Empty:
-                pass
-
-
-class CaptureFlags(object):
-    (Invalid, Ingress, Egress, Both) = (0, 1, 2, 3)
-
-
-# this should be set to the maximum size of ethernet frame
-MAX_PACKET_SIZE = 2048
-
-
-def not_none(seq):
-    return list(filter(None, seq))
-
-def skip_tcpdump_header(contents):
-    if len(contents) < 4:
-        return False
-    return contents[:4] == b'\xd4\xc3\xb2\xa1'
-
-def inspect_packet(packet):
-    pass
-
-def has_flag(val, flag):
-    return val & flag == flag
-
-def capture_namespace_loopback(process, pipeline, capture=CaptureFlags.Egress):
-    libc = CDLL('libc.so.6')
-    fd = open('/proc/{}/ns/net'.format(process), O_RDONLY)
-    libc.setns(fd, 0)
-    rx, process = init_tcpdump("lo", None, flags=capture)
-    capture_internal(rx, process, pipeline)
-
-def capture_interface(bridge, mac, pipeline, capture):
-    rx, process = init_tcpdump(bridge, mac, capture)
-    capture_internal(rx, process, pipeline)
-
-def init_tcpdump(interface, address, flags=CaptureFlags.Ingress):
-    direction, proto = [], None
-    if address:
-        proto = "ether"
-        if has_flag(flags, CaptureFlags.Ingress):
-            direction += ["dst"]
-        if has_flag(flags, CaptureFlags.Both):
-            direction += ["or"]
-        if has_flag(flags, CaptureFlags.Egress):
-            direction += ["src"]
-
-    args = not_none(["tcpdump", "-i", interface, "-w-", "-U", proto] + direction + [address])
-    read, write = pipe()
-    write2 = dup(write)
-    close(write)
-
-    proc = Popen(args, stdin=PIPE, stdout=write2, stderr=PIPE)
-
-    close(write2)
-    return read, proc
-
-def _extend_buf(buf, size=16):
-    num = size - len(buf)
-    return buf + [" "] * num
-
-def format_buffer(buf):
-    output = "  00 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15"
-    output += "\n+-------------------------------------------------+----------------+\n| "
-    cnt = 0
-    line_buffer = []
-    break_it = False
-    for c in buf:
-        if chr(c) in printable and c >= 32:
-            line_buffer.append(chr(c))
-        else:
-            line_buffer.append('.')
-        output += hex(c)[2:].zfill(2).upper() + ' '
-        cnt += 1
-        if cnt == 16:
-            cnt = 0
-            output += "|{}|".format("".join(line_buffer))
-            output += '\n| '
-            line_buffer = []
-            break_it = True
-    if line_buffer:
-        last = output.rfind('\n')
-        pad = 51 - (len(output) - last)
-        output += (" " * pad) + "|{}|".format("".join(_extend_buf(line_buffer)))
-        output += '\n'
-    if output[-2:] == '| ' and break_it:
-        output = output[:-2]
-    output += "+-------------------------------------------------+----------------+"
-    return output
-
-def capture_internal(rx, process, pipeline):
-    packets = 1
-    while pipeline.running:
-        try:
-            code = process.wait(0)
-            if code == 1:
-                import sys
-                print('[!] Tcpdump execution **failed**, are you a superuser?', file=sys.stderr)
-            return
-        except TimeoutExpired:
-            pass
-
-        data = read(rx, MAX_PACKET_SIZE)
-        if not data:
-            continue
-
-        if skip_tcpdump_header(data):
-            continue
-
-        if VERBOSE:
-            print("Packet: {}".format(packets))
-            print(format_buffer(data))
-
-        if pipeline.queue:
-            pipeline.queue.put(data)
-
-        packets += 1
-
-
-def capture_container_traffic(container, bridge="docker0", capture=CaptureFlags.Egress, docker=''):
-    global RUNNING
-
+    :param container: str, container name or id
+    :param bridge: str, name of the docker bridge
+    :param capture: CaptureFlags, what kind of traffic to capture
+    :param docker: str, url to the docker socket
+    :param kwargs: dict, additional arguments passed to the pipeline
+    :return:
+    """
     cli = Client(base_url=docker)
     cont = cli.inspect_container(container)
     ns = cont.get("NetworkSettings", None)
     if not ns:
-        raise ValueError("Container has no associated network settings")
+        raise ContainerError("Container has no associated network settings")
     mac = ns.get("MacAddress", None)
     if not mac:
-        raise ValueError("Container has no MAC Address")
+        raise ContainerError("Container has no MAC Address")
     state = cont.get("State", None)
     if not state:
-        raise ValueError("Container has no state")
+        raise ContainerError("Container has no state")
     pid = state.get("Pid", None)
     if not pid:
-        raise ValueError("Container has no PID (is it running?)")
+        raise ContainerError("Container has no PID (is it running?)")
 
-    pipeline = Pipeline(Queue())
-    pipeline.add_producer(lambda: capture_namespace_loopback(pid, pipeline))
-    pipeline.add_producer(lambda: capture_interface(bridge, mac, pipeline, capture))
+    name, cid = cont.get("Name", "/unnamed"), cont.get("Id", "(no-id)")
+
+    if 'verbose' in kwargs and kwargs['verbose']:
+        print('[+] Initializing packet capture on: "{b}" for container: "{c}@{h}"'.format(b=args.bridge,
+                                                                                          c=name[1:], h=cid))
+    pipeline = Pipeline(**kwargs)
+    pipeline.add_producer(LoopbackProducer(pid, capture))
+    pipeline.add_producer(InterfaceProducer(bridge, mac, capture))
 
     try:
         pipeline.run()
@@ -189,26 +47,27 @@ def capture_container_traffic(container, bridge="docker0", capture=CaptureFlags.
         pipeline.running = False
 
 
-arguments = ArgumentParser()
-arguments.add_argument('--verbose', default=False, action='store_true')
-arguments.add_argument('-b', '--bridge', default='docker0', help='Docker bridge to use')
-arguments.add_argument('-c', '--capture', default='egress', help='Direction of traffic to capture [egress,ingress]')
-arguments.add_argument('-d', '--docker', default='unix://var/run/docker.sock', help='')
-arguments.add_argument('container')
+def parse_args():
+    """ Parse command line arguments and return them """
+    arguments = ArgumentParser()
+    arguments.add_argument('--verbose', default=False, action='store_true')
+    arguments.add_argument('-b', '--bridge', default='docker0', help='Docker bridge to use')
+    arguments.add_argument('-c', '--capture', default='egress', help='Direction of traffic to capture [egress,ingress]')
+    arguments.add_argument('-d', '--docker', default='unix://var/run/docker.sock', help='')
+    arguments.add_argument('container')
 
-args = arguments.parse_args()
-capture_args = args.capture.lower()
-capture = CaptureFlags.Invalid
-if 'ingress' in capture_args:
-    capture |= CaptureFlags.Ingress
-if 'egress' in capture_args:
-    capture |= CaptureFlags.Egress
+    arg = arguments.parse_args()
+    capture_args = arg.capture.lower()
+    cap = CaptureFlags.Invalid
+    if 'ingress' in capture_args:
+        cap |= CaptureFlags.Ingress
+    if 'egress' in capture_args:
+        cap |= CaptureFlags.Egress
+    arg.cap = cap
 
-VERBOSE = args.verbose
+    return arg
 
-if VERBOSE:
-    print('[+] Initializing packet capture on: "{bridge}" for container: "{container}"'.format(bridge=args.bridge,
-       container=args.container))
 
-capture_container_traffic(args.container, bridge=args.bridge, docker=args.docker,
-                          capture=capture)
+if __name__ == '__main__':
+    args = parse_args()
+    _main(args.container, bridge=args.bridge, docker=args.docker, capture=args.cap, verbose=args.verbose)

@@ -4,6 +4,7 @@ setuptools.setup(
     name = 'docker-netowrk-capture',
     version = '0.1',
     scripts = ['docker-network-capture'],
+    packages = setuptools.find_packages(),
     install_requires = ['docker-py==1.9.0'],
     package_data = {
 	'': ['LICENSE', 'README.md', 'VERSION']
