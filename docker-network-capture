@@ -75,7 +75,7 @@ def parse_args():
     arguments = ArgumentParser()
     arguments.add_argument('--verbose', default=False, action='store_true')
     arguments.add_argument('-b', '--bridge', default='docker0', help='Docker bridge to use')
-    arguments.add_argument('-c', '--capture', default='egress', help='Direction of traffic to capture [egress,ingress]')
+    arguments.add_argument('-c', '--capture', default='ingress,egress', help='Direction of traffic to capture [egress,ingress]')
     arguments.add_argument('-j', '--json', default=False, help='buffer data and output JSON at the end', action='store_true')
     arguments.add_argument('-d', '--docker', default='unix://var/run/docker.sock', help='')
     arguments.add_argument('container')
