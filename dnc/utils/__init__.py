@@ -1,6 +1,45 @@
 from ctypes import CDLL
-from os import O_RDONLY, open as os_open
+from os import O_RDONLY, open as os_open, dup as os_dup, close
 from string import printable
+from contextlib import contextmanager
+
+
+def drop_privileges(uid_name='nobody', gid_name='nobody'):
+    import os, pwd, grp
+
+    if os.getuid() != 0:
+        # We're not root so, like, whatever dude
+        return
+
+    # Get the uid/gid from the name
+    running_uid = pwd.getpwnam(uid_name).pw_uid
+    running_gid = grp.getgrnam(gid_name).gr_gid
+
+    # Remove group privileges
+    os.setgroups([])
+
+    # Try setting the new uid/gid
+    os.setgid(running_gid)
+    os.setuid(running_uid)
+
+    # Ensure a very conservative umask
+    old_umask = os.umask(0o77)
+
+
+@contextmanager
+def dup_close(*args):
+    """ Duplicate a bunch of FDs and close them afterwards """
+    def _dup_close(fd):
+        d = os_dup(fd)
+        close(fd)
+        return d
+
+    duped = [_dup_close(f) for f in args]
+    try:
+        yield duped
+    finally:
+        for d in duped:
+            close(d)
 
 
 def net_ns(pid):
@@ -11,7 +50,7 @@ def net_ns(pid):
     del libc
 
 
-def not_none(seq):
+def filtered(seq):
     """ Filter the input sequence """
     return list(filter(None, seq))
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 from docker import Client
 from argparse import ArgumentParser
+from sys import stderr
 
-from dnc.pipeline import Pipeline, LoopbackProducer, InterfaceProducer
+from dnc.pipeline import Pipeline, LoopbackProducer, InterfaceProducer, JsonConsumer, StdoutConsumer
 from dnc import CaptureFlags, ContainerError
 
 
@@ -30,21 +31,43 @@ def _main(container, bridge="docker0", capture=CaptureFlags.Egress, docker='', *
     pid = state.get("Pid", None)
     if not pid:
         raise ContainerError("Container has no PID (is it running?)")
+    ip = ns.get("IPAddress", None)
+    if not pid:
+        raise ContainerError("Container has no IP address")
 
-    name, cid = cont.get("Name", "/unnamed"), cont.get("Id", "(no-id)")
+    # check invocation flags
+    verbose = 'verbose' in kwargs and kwargs['verbose']
+    jsonout = 'json' in kwargs and kwargs['json']
 
-    if 'verbose' in kwargs and kwargs['verbose']:
+    # print out container bridge, name and ID when we're verbose
+    if verbose:
+        name, cid = cont.get("Name", "/unnamed"), cont.get("Id", "(no-id)")
         print('[+] Initializing packet capture on: "{b}" for container: "{c}@{h}"'.format(b=args.bridge,
-                                                                                          c=name[1:], h=cid))
+                                                                                          c=name[1:], h=cid),
+              file=stderr)
+
+    # depending on the output, instantiate a consumer
+    if jsonout:
+        consumer = JsonConsumer(ip)
+    else:
+        consumer = StdoutConsumer(ip)
+
+    # create pipeline, add producers and consumers
     pipeline = Pipeline(**kwargs)
     pipeline.add_producer(LoopbackProducer(pid, capture))
     pipeline.add_producer(InterfaceProducer(bridge, mac, capture))
+    pipeline.add_consumer(consumer)
 
     try:
+        # execute the pipeline and loop until we're done
         pipeline.run()
     except KeyboardInterrupt:
-        print("\b\bExiting")
+        if verbose:
+            print("\b\bExiting", file=stderr)
         pipeline.running = False
+        if jsonout:
+            import json
+            print(json.dumps(consumer.buffered, indent=3))
 
 
 def parse_args():
@@ -53,11 +76,15 @@ def parse_args():
     arguments.add_argument('--verbose', default=False, action='store_true')
     arguments.add_argument('-b', '--bridge', default='docker0', help='Docker bridge to use')
     arguments.add_argument('-c', '--capture', default='egress', help='Direction of traffic to capture [egress,ingress]')
+    arguments.add_argument('-j', '--json', default=False, help='buffer data and output JSON at the end', action='store_true')
     arguments.add_argument('-d', '--docker', default='unix://var/run/docker.sock', help='')
     arguments.add_argument('container')
 
+    # parse arguments
     arg = arguments.parse_args()
     capture_args = arg.capture.lower()
+
+    # parse traffic direction spec
     cap = CaptureFlags.Invalid
     if 'ingress' in capture_args:
         cap |= CaptureFlags.Ingress
@@ -70,4 +97,5 @@ def parse_args():
 
 if __name__ == '__main__':
     args = parse_args()
-    _main(args.container, bridge=args.bridge, docker=args.docker, capture=args.cap, verbose=args.verbose)
+    _main(args.container, bridge=args.bridge, docker=args.docker,
+          capture=args.cap, verbose=args.verbose, json=args.json)
