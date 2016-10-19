@@ -4,9 +4,10 @@ from queue import Queue, Empty
 from sys import stderr
 from subprocess import Popen, PIPE, TimeoutExpired
 from binascii import unhexlify
+from time import sleep
 
 from dnc.utils import has_flag, filtered, net_ns, dup_close, drop_privileges, format_buffer
-from dnc import CaptureFlags, MAX_PACKET_SIZE, start_pcap_parser
+from dnc import start_pcap_parser, CaptureFlags, MAX_PACKET_SIZE, MAX_WAIT_RUNS
 
 
 class ConsumerComponent(object):
@@ -193,6 +194,22 @@ class Pipeline(object):
         for p in self.producers:
             threads.append(Thread(target=p))
             threads[-1].start()
+
+        runs = 0
+        while runs < MAX_WAIT_RUNS:
+            sleep(1)
+            # make sure that the we already have the read pipe
+            # of the producer
+            if all(p.rx is not None for p in self.producers):
+                break
+            runs += 1
+
+        if runs != MAX_WAIT_RUNS:
+            # tcpdump processes have been started, so we can drop root from
+            # the main process as well
+            drop_privileges()
+        else:
+            raise PipelineError("Couldn't attach to tcpdump data producers")
 
         while any(t.is_alive() for t in threads):
             try:

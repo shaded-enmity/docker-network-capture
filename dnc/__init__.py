@@ -1,6 +1,8 @@
 """ Size of the buffer used to read from tcpdump pipe """
 MAX_PACKET_SIZE = 2048
 
+""" How many times we're gonna sleep waiting for producers to come online """
+MAX_WAIT_RUNS = 10
 
 class CaptureFlags(object):
     """ Which kind of traffic to capture """
@@ -23,7 +25,7 @@ def start_pcap_parser(r, w, interface):
         for p in cap.packets:
             payload = p.packet.payload
 
-            # discard L1/L2 packets
+            # discard Ethernet and IP frames
             if isinstance(payload, bytes):
                 continue
 

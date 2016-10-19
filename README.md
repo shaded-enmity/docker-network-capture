@@ -34,6 +34,12 @@ optional arguments:
   -d DOCKER, --docker DOCKER
 ```
 
+## Architecture & Security
+
+![DNC ARCHITECTURE](https://github.com/shaded-enmity/docker-network-capture/media/dnc_architecture.jpg "DNC ARCHITECTURE")
+
+The main process starts off as `root` and creates two pipeline producers, one for the ethernet interface of the container and one for the namespaced loopback interface. Each pipeline launches it's own `tcpdump` capture process, after that is done, the main process deprivileges itself by changing it's UID/GID/Groups settings to nobody. After the `tcpdump` process is ready, a new process is forked, which is immediately deprivileged in the same way as the main process, and this process then handles the the parsing of raw byte stream into packets via PCAP and feeding them back to the main process via the `Queue`.
+
 ## Example
 
 In the following example we see the output of `docker-network-capture` for a container
