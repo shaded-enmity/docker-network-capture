@@ -42,9 +42,8 @@ def _main(container, bridge="docker0", capture=CaptureFlags.Egress, docker='', *
     # print out container bridge, name and ID when we're verbose
     if verbose:
         name, cid = cont.get("Name", "/unnamed"), cont.get("Id", "(no-id)")
-        print('[+] Initializing packet capture on: "{b}" for container: "{c}@{h}"'.format(b=args.bridge,
-                                                                                          c=name[1:], h=cid),
-              file=stderr)
+        msg = '[+] Initializing packet capture on: "{b}" for container: "{c}@{h}"'
+        print(msg.format(b=args.bridge, c=name[1:], h=cid), file=stderr)
 
     # depending on the output, instantiate a consumer
     if jsonout:
