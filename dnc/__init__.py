@@ -16,6 +16,7 @@ def start_pcap_parser(r, w, interface):
     """ Start parsing incoming packets """
 
     from pcapfile import savefile
+    from pcapfile.protocols.transport import tcp
     from os import write, close, fdopen
 
     try:
@@ -29,11 +30,18 @@ def start_pcap_parser(r, w, interface):
             if isinstance(payload, bytes):
                 continue
 
-            src_port, dst_port = payload.payload.src_port, payload.payload.dst_port
+
+            l3 = payload.payload
+            if isinstance(l3, tcp.TCP):
+                seq = '{}-{}'.format(l3.acknum,l3.seqnum)
+            else:
+                seq = '-'
+
+            src_port, dst_port = l3.src_port, l3.dst_port
             src, dst = payload.src.decode('utf-8'), payload.dst.decode('utf-8')
-            # {src}:{src_port} {dst}:{dst_port} {interface} {payload}
-            data_string = '{}:{} {}:{} {} {}\n'.format(src, src_port, dst, dst_port, interface,
-                                                       payload.payload.payload.decode('utf-8'))
+            # {src}:{src_port} {dst}:{dst_port} {interface} {seq} {payload}
+            data_string = '{}:{} {}:{} {} {} {}\n'.format(src, src_port, dst, dst_port, interface,
+                                                          seq, l3.payload.decode('utf-8'))
 
             # convert to byte buffer and write to the output pipe
             buf = bytes(data_string, 'utf-8')

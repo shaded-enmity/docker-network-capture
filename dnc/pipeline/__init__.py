@@ -15,13 +15,13 @@ class ConsumerComponent(object):
     def __init__(self, ip):
         self.ip = ip
 
-    def consume(self, src, src_port, dst, dst_port, interface, payload):
+    def consume(self, src, src_port, dst, dst_port, interface, seq, payload):
         raise NotImplementedError("Calling consume on: {}".format(self.__class__.__name__))
 
     def __call__(self, data):
-        src_spec, dst_spec, interface, payload = data.split(' ')
+        src_spec, dst_spec, interface, seq, payload = data.split(' ')
         src, src_port, dst, dst_port = src_spec.split(':') + dst_spec.split(':')
-        self.consume(src, src_port, dst, dst_port, interface, payload)
+        self.consume(src, src_port, dst, dst_port, interface, seq, payload)
 
 
 class JsonConsumer(ConsumerComponent):
@@ -30,26 +30,36 @@ class JsonConsumer(ConsumerComponent):
         super().__init__(ip)
         self.buffered = []
 
-    def consume(self, src, src_port, dst, dst_port, interface, payload):
-        self.buffered.append({
+    def consume(self, src, src_port, dst, dst_port, interface, seq, payload):
+        obj = {
             'interface': interface,
             'src': src,
             'src_port': src_port,
             'dst': dst,
             'dst_port': dst_port,
             'payload': payload
-        })
+        }
+
+        if seq == '-':
+            obj['type'] = 'udp'
+        else:
+            obj['type'] = 'tcp'
+            acknum, seqnum = seq.split('-')
+            obj['acknum'] = acknum
+            obj['seqnum'] = seqnum
+
+        self.buffered.append(obj)
 
 
 class StdoutConsumer(ConsumerComponent):
     """ Prints the packet information to the stdout """
-    def consume(self, src, src_port, dst, dst_port, interface, payload):
+    def consume(self, src, src_port, dst, dst_port, interface, seq, payload):
         if src == self.ip:
-            print('OUT: {}:{}'.format(dst, dst_port))
+            print('OUT: {}:{} ({})'.format(dst, dst_port, seq))
         elif dst == self.ip:
-            print('IN:  {}:{}'.format(src, src_port))
+            print('IN:  {}:{} ({})'.format(src, src_port, seq))
         elif dst == src == '127.0.0.1':
-            print('LOCALHOST {}-{}'.format(src_port, dst_port))
+            print('LOCALHOST {}-{} ({})'.format(src_port, dst_port, seq))
 
         if payload:
             print(format_buffer(unhexlify(payload)))
@@ -112,6 +122,8 @@ class ProducerComponent(object):
         """ Starts reading from the `read` pipe as long as the pipeline is running """
         self.init_tcpdump()
 
+        buffered = ''
+
         while self.pipeline.running:
             # probe the tcpdump process
             try:
@@ -127,13 +139,25 @@ class ProducerComponent(object):
             if not data:
                 continue
 
-            # split coalesced entries
-            data = data.decode('utf-8').splitlines()
+            data = data.decode('utf-8')
+            packets = data.splitlines()
+            if buffered:
+                # We already have some data buffered so merge the data with the contents
+                # of the first packet and empty the buffer
+                packets[0] = buffered + packets[0]
+                buffered = ''
+
+            if not data.endswith('\n'):
+                # If the data doesn't end with a new line then we're in a middle
+                # of a packet, so we put the last element into a buffer and remove it
+                # from the packets list
+                buffered = packets[-1]
+                packets.pop()
 
             # enqueue each entry
             if self.pipeline.queue:
-                for d in data:
-                    self.pipeline.queue.put(d)
+                for p in packets:
+                    self.pipeline.queue.put(p)
 
         # reap what we have sown
         waitpid(self.child_parser, 0)
