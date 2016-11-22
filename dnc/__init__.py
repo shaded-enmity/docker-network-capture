@@ -9,7 +9,12 @@ class CaptureFlags(object):
     (Invalid, Ingress, Egress, Both) = (0, 1, 2, 3)
 
 
-class ContainerError(Exception): pass
+class PrivilegeError(Exception):
+    """ Raised when bad program runs under bad privilege """
+
+
+class ContainerError(Exception):
+    """ Raised when the Docker container couldn't be probed """
 
 
 def start_pcap_parser(r, w, interface):

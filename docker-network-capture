@@ -2,9 +2,10 @@
 from docker import Client
 from argparse import ArgumentParser
 from sys import stderr
+from os import getuid
 
 from dnc.pipeline import Pipeline, LoopbackProducer, InterfaceProducer, JsonConsumer, StdoutConsumer
-from dnc import CaptureFlags, ContainerError
+from dnc import CaptureFlags, ContainerError, PrivilegeError
 
 
 def _main(container, bridge="docker0", capture=CaptureFlags.Egress, docker='', **kwargs):
@@ -17,6 +18,10 @@ def _main(container, bridge="docker0", capture=CaptureFlags.Egress, docker='', *
     :param kwargs: dict, additional arguments passed to the pipeline
     :return:
     """
+    root = 'root' in kwargs and kwargs['root']
+    if root and getuid() != 0:
+        raise PrivilegeError("Execution requires root (uid: {})".format(getuid()))
+
     cli = Client(base_url=docker)
     cont = cli.inspect_container(container)
     ns = cont.get("NetworkSettings", None)
@@ -73,6 +78,7 @@ def parse_args():
     """ Parse command line arguments and return them """
     arguments = ArgumentParser()
     arguments.add_argument('--verbose', default=False, action='store_true')
+    arguments.add_argument('--no-root', default=False, action='store_true')
     arguments.add_argument('-b', '--bridge', default='docker0', help='Docker bridge to use')
     arguments.add_argument('-c', '--capture', default='ingress,egress', help='Direction of traffic to capture [egress,ingress]')
     arguments.add_argument('-j', '--json', default=False, help='buffer data and output JSON at the end', action='store_true')
@@ -97,4 +103,5 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
     _main(args.container, bridge=args.bridge, docker=args.docker,
-          capture=args.cap, verbose=args.verbose, json=args.json)
+          capture=args.cap, verbose=args.verbose, json=args.json,
+          root=not args.no_root)
