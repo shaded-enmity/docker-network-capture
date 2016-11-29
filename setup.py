@@ -5,7 +5,7 @@ setuptools.setup(
     version = open('VERSION').read(),
     scripts = ['docker-network-capture'],
     packages = setuptools.find_packages(),
-    install_requires = ['docker-py==1.9.0', 'pypcapfile==0.12.0'],
+    install_requires = ['docker-py', 'pypcapfile==0.12.0'],
     package_data = {
 	    '': ['LICENSE', 'README.md', 'VERSION']
     },

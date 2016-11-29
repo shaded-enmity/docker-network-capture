@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from docker import Client
+from docker import AutoVersionClient as Client
 from argparse import ArgumentParser
 from sys import stderr
 from os import getuid
